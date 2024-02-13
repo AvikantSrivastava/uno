@@ -1,10 +1,15 @@
 package models
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/gorilla/websocket"
+)
 
 type Player struct {
 	Name string
 	*Deck
+	conn *websocket.Conn
 }
 
 func NewPlayer(name string) *Player {
@@ -26,4 +31,7 @@ func (player *Player) AddCards(cards []Card) {
 	for _, c := range cards {
 		player.AddCard(c)
 	}
+}
+func (p *Player) Send(message string) error {
+	return p.conn.WriteMessage(websocket.TextMessage, []byte(message))
 }
