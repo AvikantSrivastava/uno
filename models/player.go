@@ -32,6 +32,10 @@ func (player *Player) AddCards(cards []Card) {
 		player.AddCard(c)
 	}
 }
+func (p *Player) SetConn(conn *websocket.Conn) {
+	p.conn = conn
+	fmt.Println("Success writing conn")
+}
 func (p *Player) Send(message string) error {
 	return p.conn.WriteMessage(websocket.TextMessage, []byte(message))
 }

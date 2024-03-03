@@ -11,6 +11,7 @@ type Deck struct {
 }
 
 func NewDeck() *Deck {
+
 	return &Deck{
 		Cards:   make([]Card, 0),
 		Counter: make(map[string]int),

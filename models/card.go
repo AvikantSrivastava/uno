@@ -1,8 +1,8 @@
 package models
 
 import (
-	"github.com/AvikantSrivastava/uno/models/constants/color"
-	"github.com/AvikantSrivastava/uno/models/constants/rank"
+	"uno/models/constants/color"
+	"uno/models/constants/rank"
 )
 
 type Card struct {
@@ -30,4 +30,14 @@ func (bottomCard Card) ValidCard(topCard Card) bool {
 		return true
 	}
 	return false
+}
+func (card Card) IsSameColor(otherCard Card) bool {
+	// Implement color comparison logic
+	return true // Replace with the actual implementation
+}
+
+// IsSameRank checks if two cards have the same rank
+func (card Card) IsSameRank(otherCard Card) bool {
+	// Implement rank comparison logic
+	return true // Replace with the actual implementation
 }

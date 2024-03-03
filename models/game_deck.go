@@ -1,8 +1,8 @@
 package models
 
 import (
-	color "github.com/AvikantSrivastava/uno/models/constants/color"
-	rank "github.com/AvikantSrivastava/uno/models/constants/rank"
+	color "uno/models/constants/color"
+	rank "uno/models/constants/rank"
 )
 
 type GameDeck struct {
