@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -20,11 +21,13 @@ func NewPlayer(name string) *Player {
 	return player
 }
 
-func (player *Player) CardInHand() {
-	fmt.Println(player.Name, "has")
+func (player *Player) CardInHand() string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s has:\n", player.Name))
 	for i, c := range player.Deck.Cards {
-		fmt.Println("Card", i, ":\t", c.LogCard())
+		sb.WriteString(fmt.Sprintf("Card %d:\t%s\n", i, c.LogCard()))
 	}
+	return sb.String()
 }
 
 func (player *Player) AddCards(cards []Card) {
