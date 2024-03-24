@@ -25,9 +25,10 @@ func UNoOLogoPrint() {
 	// Relative path to your file
 	absolutePath := "D:\\WEb development\\uno\\UNO_Logo.png"
 	convertOptions := convert.DefaultOptions
-	convertOptions.FixedWidth = 55
+	convertOptions.FixedWidth = 58
 	convertOptions.FixedHeight = 16
 
 	converter := convert.NewImageConverter()
-	fmt.Print(converter.ImageFile2ASCIIString(absolutePath, &convertOptions))
+	fmt.Print(converter.ImageFile2ASCIIString(absolutePath, &convertOptions), "\n")
+
 }

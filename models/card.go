@@ -24,12 +24,19 @@ func (c Card) LogCard() string {
 }
 
 func (card Card) IsSameColor(otherCard Card) bool {
-	// Implement color comparison logic
-	return true // Replace with the actual implementation
+	if card.Color == otherCard.Color {
+		return true
+	}
+
+	return false
+
 }
 
 // IsSameRank checks if two cards have the same rank
 func (card Card) IsSameRank(otherCard Card) bool {
-	// Implement rank comparison logic
-	return true // Replace with the actual implementation
+	if card.Rank == otherCard.Rank {
+		return true
+	}
+
+	return false
 }

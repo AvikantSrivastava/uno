@@ -2,6 +2,7 @@ package internal
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"uno/models"
@@ -18,6 +19,7 @@ type Game struct {
 	ActivePlayer     *models.Player //pointer to active player
 	mu               sync.Mutex
 	GameTopCard      *models.Card //TopCard of Playing Game
+	GameFirstMove    bool
 }
 
 func NewGame(playerNames []string) *Game {
@@ -57,7 +59,7 @@ func (g *Game) NextTurn() {
 	g.CurrentTurn = (g.CurrentTurn + integerDirection) % len(g.Players)
 
 	g.ActivePlayer = g.Players[g.CurrentTurn]
-	fmt.Printf("It's your turn, %s! and turn %d", g.ActivePlayer.Name, g.CurrentTurn)
+	fmt.Printf("It's your turn, %s! ", g.ActivePlayer.Name)
 	//g.DisposedGameDeck
 
 	//g.ActivePlayer.Send()
@@ -69,22 +71,26 @@ func (g *Game) Start() {
 	// Start the first player's turn
 	g.CurrentTurn = 0
 	g.GameDirection = true
-
+	g.GameFirstMove = true
 	g.ActivePlayer = g.Players[g.CurrentTurn] //g.Players is already a pointer
-	//g.ActivePlayer.CardInHand()
-	//Commenting start
-	//PlayCard then next turn
-	g.NextTurn()
+	for _, p := range g.Players {
+
+		err := p.Send(fmt.Sprintf("It's %s's turn.Please play your turn.\n", g.ActivePlayer.Name))
+		if err != nil {
+			// Handle the error
+			fmt.Printf("Error sending message to player %s: %v\n", p.Name, err)
+		}
+	}
 
 }
 
-func (g *Game) PlayCard(player *models.Player, card models.Card) { // Reason why it 's Game func because of isValidMove ,can check gametopcard state and confirm
+func (g *Game) PlayCard(player *models.Player, cardIdx int) { // Reason why it 's Game func because of isValidMove ,can check gametopcard state and confirm
 	g.mu.Lock()
 	defer g.mu.Unlock()
-
+	card := player.Deck.Cards[cardIdx]
 	// Check if the card is playable
 	//Might remove this isValidMove to another package
-	if g.IsValidMove(card) {
+	if g.IsValidMove(card, player) {
 		// Perform game logic for playing the card
 		// Update game state, check for UNO, etc.
 
@@ -94,20 +100,28 @@ func (g *Game) PlayCard(player *models.Player, card models.Card) { // Reason why
 		}
 
 		// Check if the player has won\
-		//Set Game top card
-		g.GameTopCard = &card //  assignment to a pointer
+		//Add Card to disposed Deck
+		DisposedCard := player.Deck.RemoveCard(cardIdx)
+		g.DisposedGameDeck.AddCard(DisposedCard)
+		g.GameTopCard = &DisposedCard //  assignment to a pointer //Set Game top card
 		// Move to the next turn
 		g.NextTurn()
 	} else {
 		// Notify the player that the move is invalid
-		player.Send("Invalid move. Try again.")
+		player.Send("Invalid move. Try again. or Wrong player")
 	}
 }
-func (g *Game) IsValidMove(playedcard models.Card) bool {
-
+func (g *Game) IsValidMove(playedcard models.Card, player *models.Player) bool {
+	if g.GameFirstMove {
+		g.GameFirstMove = false //First card will not check deck's top card
+		return true
+	}
 	GameTopCard := g.GameTopCard
 	if playedcard.IsSameColor(*GameTopCard) || playedcard.IsSameRank(*GameTopCard) {
 		return true
+	}
+	if player != g.ActivePlayer {
+		return false
 	}
 
 	return false
@@ -131,10 +145,9 @@ func (g *Game) HandleMessage(msg string, conn *websocket.Conn, clientName string
 			conn.WriteMessage(websocket.TextMessage, []byte("Invalid command format. Usage: playcard <card>"))
 			return
 		}
-		//card := parts[1]
+		cardidx, _ := strconv.Atoi(parts[1])
 		// Call the PlayCard function for the player
-		//g.PlayCard(playerPtr, card)
-		conn.WriteMessage(websocket.TextMessage, []byte("Card played successfully."))
+		g.PlayCard(playerPtr, cardidx)
 
 	case "showcards":
 		// Call the ShowCards function for the player

@@ -84,7 +84,9 @@ func handleConnections(w http.ResponseWriter, r *http.Request, game *internal.Ga
 	}
 	clients[conn] = clientName
 	for _, player := range game.Players {
-		player.SetConn(conn)
+		if player.Name == clientName {
+			player.SetConn(conn)
+		}
 	}
 	fmt.Printf("New client '%s' joined\n", clientName)
 
