@@ -22,13 +22,13 @@ func (m Model) View() string {
 	return ""
 }
 func UNoOLogoPrint() {
-	// Relative path to your file
-	absolutePath := "D:\\WEb development\\uno\\UNO_Logo.png"
+	//
+	relativePath := "../../assets/UNO_Logo.png"
 	convertOptions := convert.DefaultOptions
 	convertOptions.FixedWidth = 58
 	convertOptions.FixedHeight = 16
 
 	converter := convert.NewImageConverter()
-	fmt.Print(converter.ImageFile2ASCIIString(absolutePath, &convertOptions), "\n")
+	fmt.Print(converter.ImageFile2ASCIIString(relativePath, &convertOptions), "\n")
 
 }
