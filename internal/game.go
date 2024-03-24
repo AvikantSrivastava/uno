@@ -10,13 +10,14 @@ import (
 )
 
 type Game struct {
-	Players      []*models.Player
-	GameDeck     *models.GameDeck
-	CurrentTurn  int
-	Reverse      bool
-	ActivePlayer *models.Player //pointer to active player
-	mu           sync.Mutex
-	GameTopCard  *models.Card //TopCard of Playing Game
+	Players          []*models.Player
+	GameDeck         *models.GameDeck
+	DisposedGameDeck *models.GameDeck
+	CurrentTurn      int
+	GameDirection    bool
+	ActivePlayer     *models.Player //pointer to active player
+	mu               sync.Mutex
+	GameTopCard      *models.Card //TopCard of Playing Game
 }
 
 func NewGame(playerNames []string) *Game {
@@ -29,12 +30,37 @@ func NewGame(playerNames []string) *Game {
 	for _, p := range players {
 		p.AddCards(gameDeck.Cut(7)) //Players get the cards
 	}
+	disposedGameDeck := &models.GameDeck{
+		Deck: &models.Deck{
+			Cards: make([]models.Card, 0), // Initialize the Cards slice
+		},
+	}
 
 	game := &Game{
-		Players:  players,
-		GameDeck: gameDeck,
+		Players:          players,
+		GameDeck:         gameDeck,
+		DisposedGameDeck: disposedGameDeck,
 	}
 	return game
+}
+
+func (g *Game) NextTurn() {
+	// g.ActivePlayer.mu.Lock()
+	// defer g.ActivePlayer.mu.Unlock()
+
+	if g.ActivePlayer != nil {
+
+		g.ActivePlayer.Send("Your turn is over.")
+	}
+
+	integerDirection := convertDirectionToInteger(g.GameDirection)
+	g.CurrentTurn = (g.CurrentTurn + integerDirection) % len(g.Players)
+
+	g.ActivePlayer = g.Players[g.CurrentTurn]
+	fmt.Printf("It's your turn, %s! and turn %d", g.ActivePlayer.Name, g.CurrentTurn)
+	//g.DisposedGameDeck
+
+	//g.ActivePlayer.Send()
 }
 func (g *Game) Start() {
 	// g.mu.Lock()
@@ -42,27 +68,17 @@ func (g *Game) Start() {
 
 	// Start the first player's turn
 	g.CurrentTurn = 0
+	g.GameDirection = true
+
 	g.ActivePlayer = g.Players[g.CurrentTurn] //g.Players is already a pointer
-	g.ActivePlayer.CardInHand()
+	//g.ActivePlayer.CardInHand()
 	//Commenting start
-	//g.nextTurn()
+	//PlayCard then next turn
+	g.NextTurn()
 
 }
 
-func (g *Game) NextTurn() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	if g.ActivePlayer != nil {
-		g.ActivePlayer.Send("Your turn is over.")
-	}
-
-	g.CurrentTurn = (g.CurrentTurn + 1) % len(g.Players)
-	g.ActivePlayer = g.Players[g.CurrentTurn]
-
-	g.ActivePlayer.Send(fmt.Sprintf("It's your turn, %s!", g.ActivePlayer.Name))
-}
-func (g *Game) PlayCard(player *models.Player, card models.Card) {
+func (g *Game) PlayCard(player *models.Player, card models.Card) { // Reason why it 's Game func because of isValidMove ,can check gametopcard state and confirm
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -117,17 +133,15 @@ func (g *Game) HandleMessage(msg string, conn *websocket.Conn, clientName string
 		}
 		//card := parts[1]
 		// Call the PlayCard function for the player
-		// err := playerPtr.PlayCard(card)
-		// if err != nil {
-		// 	conn.WriteMessage(websocket.TextMessage, []byte(err.Error()))
-		// } else {
-		// 	conn.WriteMessage(websocket.TextMessage, []byte("Card played successfully."))
-		// }
+		//g.PlayCard(playerPtr, card)
+		conn.WriteMessage(websocket.TextMessage, []byte("Card played successfully."))
+
 	case "showcards":
 		// Call the ShowCards function for the player
 		your_cards := playerPtr.CardInHand()
 		conn.WriteMessage(websocket.TextMessage, []byte(your_cards))
-
+	case "topcard":
+		conn.WriteMessage(websocket.TextMessage, []byte(g.GameTopCard.LogCard()))
 	default:
 		conn.WriteMessage(websocket.TextMessage, []byte("Chat msg"))
 	}

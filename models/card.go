@@ -23,14 +23,6 @@ func (c Card) LogCard() string {
 	return string(c.Rank) + " " + string(c.Color)
 }
 
-func (bottomCard Card) ValidCard(topCard Card) bool {
-	if bottomCard.Type() == "action-bottomCard-no-color" {
-		return true
-	} else if bottomCard.Color == topCard.Color || bottomCard.Rank == topCard.Rank {
-		return true
-	}
-	return false
-}
 func (card Card) IsSameColor(otherCard Card) bool {
 	// Implement color comparison logic
 	return true // Replace with the actual implementation
