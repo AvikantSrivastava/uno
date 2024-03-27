@@ -1,8 +1,8 @@
 package models
 
 import (
-	"github.com/AvikantSrivastava/uno/models/constants/color"
-	"github.com/AvikantSrivastava/uno/models/constants/rank"
+	"uno/models/constants/color"
+	"uno/models/constants/rank"
 )
 
 type Card struct {
@@ -23,11 +23,20 @@ func (c Card) LogCard() string {
 	return string(c.Rank) + " " + string(c.Color)
 }
 
-func (bottomCard Card) ValidCard(topCard Card) bool {
-	if bottomCard.Type() == "action-bottomCard-no-color" {
-		return true
-	} else if bottomCard.Color == topCard.Color || bottomCard.Rank == topCard.Rank {
+func (card Card) IsSameColor(otherCard Card) bool {
+	if card.Color == otherCard.Color {
 		return true
 	}
+
+	return false
+
+}
+
+// IsSameRank checks if two cards have the same rank
+func (card Card) IsSameRank(otherCard Card) bool {
+	if card.Rank == otherCard.Rank {
+		return true
+	}
+
 	return false
 }

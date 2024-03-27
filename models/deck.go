@@ -7,13 +7,14 @@ import (
 
 type Deck struct {
 	Cards   []Card
-	Counter map[string]int
+	Counter int
 }
 
 func NewDeck() *Deck {
+
 	return &Deck{
 		Cards:   make([]Card, 0),
-		Counter: make(map[string]int),
+		Counter: 0,
 	}
 }
 
@@ -26,7 +27,7 @@ func (d *Deck) Shuffle() {
 
 func (d *Deck) AddCard(card Card) {
 	d.Cards = append(d.Cards, card)
-	d.Counter[card.Type()]++
+	d.Counter++
 }
 
 func (d *Deck) RemoveCard(index int) Card {
@@ -35,7 +36,7 @@ func (d *Deck) RemoveCard(index int) Card {
 	}
 	card := d.Cards[index]
 	d.Cards = append(d.Cards[:index], d.Cards[index+1:]...)
-	d.Counter[card.Type()]--
+	d.Counter--
 	return card
 }
 
