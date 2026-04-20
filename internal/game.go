@@ -124,7 +124,7 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 }
 
 
-func(g *Game) SetActivePlayer(index int) {
+func (g *Game) SetActivePlayer(index int) {
 	g.CurrentTurn = index
 	g.ActivePlayer = g.Players[index]
 }
@@ -156,7 +156,7 @@ func (g *Game) PerformDrawAction(player *game.Player, card_count int) {
 	for _, card := range cardsDrawn {
 		g.Network.SendInfoMessage(player, fmt.Sprintf("%s Drew %s", player.Name, card.LogCard()))
 	}
-	g.Network.SendInfoMessage(player, fmt.Sprintf("%s Drew Drew %d cards  ", player.Name, card_count))
+	g.Network.SendInfoMessage(player, fmt.Sprintf("%s  Drew %d cards  ", player.Name, card_count))
 
 }
 
@@ -193,10 +193,7 @@ func (g *Game) skipNextTurn() {
 // declareWinner declares the winner of the game
 func (g *Game) declareWinner(winner *game.Player) {
 	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("%s HAS WON THE GAME!!!!", winner.Name))
-	}
-	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("GAME OVER  %s ,CLOSING CONNECTION ", winner.Name))
+		g.Network.SendInfoMessage(p, fmt.Sprintf("GAME OVER !  %sHAS WON THE GAME!! ,CLOSING CONNECTION ", winner.Name))
 		g.Network.CloseConnection(p)
 	}
 	// Perform any necessary  end-game animation with bubbleTea
@@ -270,12 +267,16 @@ func (g *Game) HandleCommand(data []byte, player *game.Player) {
 		}
 		g.SyncAllPlayers()
 	case *commands.DrawCardComamnd:
-		if (g.ActivePlayer == player && player.Drawn == false){
+		if g.ActivePlayer == player && player.Drawn == false {
 			g.PerformDrawAction(player, 1)
 			player.Drawn = true
 		}
-		if (!g.ActivePlayer.HasPlayableCard(g.TopCard)) {
-			g.NextTurn()
+		// Check if the player has a playable card (including the drawn one)
+		if player.HasPlayableCard(g.TopCard, g.TopColor) {
+			player.Drawn = false //To make sure After getting playable card the turn isn't skipped
+			g.Network.SendInfoMessage(player, "It is still your turn.")
+		} else {
+			g.NextTurn() // No playable card, move to the next player's turn
 		}
 		g.SyncAllPlayers()
 	default:
@@ -319,7 +320,8 @@ func (g *Game) SyncPlayer(p *game.Player) {
 
 	conn, ok := g.Network.clients[*p]
 	if !ok {
-		log.Printf("Player %s not found in network clients", p.Name)
+		log.Printf("SyncPlayer Error:Player %s not found in network clients", p.Name)
+		//log.Printf("Top card is %s ", g.TopCard)
 		return
 	}
 
@@ -340,7 +342,6 @@ func (g *Game) SyncPlayer(p *game.Player) {
 
 func (g *Game) SyncAllPlayers() {
 	var wg sync.WaitGroup
-
 	for _, playerPtr := range g.Players {
 		wg.Add(1)
 

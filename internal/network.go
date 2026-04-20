@@ -19,7 +19,7 @@ type Network struct {
 	gameStarted bool
 	locks       map[game.Player]*sync.Mutex
 	wg          *sync.WaitGroup
-	mu   sync.RWMutex
+	mu          sync.RWMutex
 }
 
 func NewNetwork() *Network {
@@ -48,6 +48,7 @@ func (n *Network) RemoveClient(player game.Player) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	delete(n.clients, player)
+	log.Printf("%s Player is removed from map", player.Name)
 }
 
 func (n *Network) GetClient(player game.Player) (*websocket.Conn, bool) {
@@ -93,7 +94,6 @@ func (n *Network) BroadcastMessages() {
 					// Close the connection and remove the player from the map
 					conn.Close()
 
-
 					n.mu.Lock()
 					defer n.mu.Unlock()
 					delete(n.clients, player)
@@ -115,9 +115,9 @@ func (n *Network) ListenToClient(player *game.Player, r *Room) {
 		game.Start()
 		conn_info_dto := dtos.ConnectionDTO{
 			PlayerName: player.Name,
-			RoomID: r.id,
+			RoomID:     r.id,
 			MaxPlayers: r.maxPlayers,
-			Players: r.game.getAllPlayers(),
+			Players:    r.game.getAllPlayers(),
 		}
 		go game.SyncAllPlayers()
 
