@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"strconv"
-	"time"
+	"sync"
 	"uno/models/dtos"
 	"uno/models/game"
 
@@ -105,12 +106,6 @@ func validatePlayerName(name string) error {
 
 // CreateRoomHandler handles requests to create a new room
 func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
-	if len(rooms) >= MAX_ROOMS {
-		http.Error(w, "Maximum number of rooms reached", http.StatusForbidden)
-		return
-	}
-
-	// Get query parameters
 	playerName := r.URL.Query().Get("player_name")
 	if err := validatePlayerName(playerName); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -128,25 +123,44 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid max_players parameter", http.StatusBadRequest)
 		return
 	}
-	room := NewRoom(maxPlayers)
 
-	game := &room.game
-	player := AddPlayerToRoom(&w, room.id, playerName)
+	if maxPlayers < MinPlayers || maxPlayers > MaxPlayersPerRoom {
+		http.Error(w, fmt.Sprintf("max_players must be between %d and %d", MinPlayers, MaxPlayersPerRoom), http.StatusBadRequest)
+		return
+	}
 
-	// Respond with the room id
+	room, err := NewRoom(maxPlayers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	g := &room.game
+	player, err := AddPlayerToRoom(room.id, playerName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	conn := UpgradeWebsocket(w, r, room)
-	game.Network.AddClient(*player, conn)
+	if conn == nil {
+		return
+	}
+
+	g.Network.AddClient(*player, conn)
 
 	dto := dtos.ConnectionDTO{
 		PlayerName: playerName,
-		RoomID: room.id,
+		RoomID:     room.id,
 		MaxPlayers: maxPlayers,
-		Players: room.game.getAllPlayers(),
+		Players:    room.game.getAllPlayers(),
 	}
-	conn.WriteMessage(websocket.TextMessage, dto.Serialize())
+	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
+		g.Network.RemoveClient(*player)
+		return
+	}
 
-	game.Network.ListenToClient(player, room)
-
+	g.Network.ListenToClient(player, room)
 }
 
 func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
