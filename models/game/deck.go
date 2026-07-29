@@ -2,7 +2,6 @@ package game
 
 import (
 	"math/rand"
-	"time"
 )
 
 type Deck struct {
@@ -11,7 +10,6 @@ type Deck struct {
 }
 
 func NewDeck() *Deck {
-
 	return &Deck{
 		Cards:   make([]Card, 0),
 		Counter: 0,
@@ -19,7 +17,6 @@ func NewDeck() *Deck {
 }
 
 func (d *Deck) Shuffle() {
-	rand.Seed(time.Now().UnixNano())
 	rand.Shuffle(len(d.Cards), func(i, j int) {
 		d.Cards[i], d.Cards[j] = d.Cards[j], d.Cards[i]
 	})
