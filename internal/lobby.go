@@ -151,58 +151,80 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 	playerName := r.URL.Query().Get("player_name")
-	roomIdStr := r.URL.Query().Get("room_id")
-
-	// Check if player_name and room_id are provided
-	if playerName == "" || roomIdStr == "" {
-		http.Error(w, "player_name and room_id are required", http.StatusBadRequest)
+	if err := validatePlayerName(playerName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Validate room id
+	roomIdStr := r.URL.Query().Get("room_id")
+	if roomIdStr == "" {
+		http.Error(w, "room_id is required", http.StatusBadRequest)
+		return
+	}
+
 	roomId, err := strconv.Atoi(roomIdStr)
 	if err != nil {
 		http.Error(w, "room_id must be a valid integer", http.StatusBadRequest)
 		return
 	}
-	room := rooms[roomId]
-	game := &room.game
-	player := AddPlayerToRoom(&w, roomId, playerName)
+
+	room, ok := GetRoom(roomId)
+	if !ok {
+		http.Error(w, "Room not found", http.StatusNotFound)
+		return
+	}
+
+	player, err := AddPlayerToRoom(roomId, playerName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	conn := UpgradeWebsocket(w, r, room)
-	game.Network.AddClient(*player, conn)
+	if conn == nil {
+		return
+	}
+
+	g := &room.game
+	g.Network.AddClient(*player, conn)
 
 	dto := dtos.ConnectionDTO{
 		PlayerName: playerName,
-		RoomID: room.id,
+		RoomID:     room.id,
 		MaxPlayers: room.maxPlayers,
-		Players: room.game.getAllPlayers(),
+		Players:    room.game.getAllPlayers(),
 	}
-	conn.WriteMessage(websocket.TextMessage, dto.Serialize())
+	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
+		g.Network.RemoveClient(*player)
+		return
+	}
 
-	game.Network.ListenToClient(player, room)
+	g.Network.ListenToClient(player, room)
 }
 
-func AddPlayerToRoom(w *http.ResponseWriter, roomId int, playerName string) *game.Player {
-	r, ok := rooms[roomId]
+func AddPlayerToRoom(roomId int, playerName string) (*game.Player, error) {
+	room, ok := GetRoom(roomId)
 	if !ok {
-		http.Error(*w, "Room not found", http.StatusNotFound)
-		return nil
+		return nil, fmt.Errorf("room not found")
 	}
-	g := &r.game
-	if len(g.Players) >= r.maxPlayers {
-		http.Error(*w, "Room is full", http.StatusForbidden)
-		return nil
+
+	room.mu.Lock()
+	defer room.mu.Unlock()
+
+	g := &room.game
+	if len(g.Players) >= room.maxPlayers {
+		return nil, fmt.Errorf("room is full")
 	}
 
 	player := game.NewPlayer(playerName)
 	g.AddPlayer(player)
-	return player
+	return player, nil
 }
 
 func UpgradeWebsocket(w http.ResponseWriter, r *http.Request, room *Room) *websocket.Conn {
 	conn, err := room.game.Network.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Println("Error upgrading to WebSocket:", err)
+		fmt.Printf("Error upgrading to WebSocket: %v\n", err)
 		return nil
 	}
 	return conn
