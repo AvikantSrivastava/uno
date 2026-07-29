@@ -5,7 +5,6 @@ import (
 	"log"
 	"math/rand"
 	"sync"
-	"time"
 	"uno/models/commands"
 	"uno/models/constants/color"
 	"uno/models/constants/rank"
@@ -21,10 +20,11 @@ type Game struct {
 	DisposedGameDeck *game.GameDeck
 	Room             *Room
 	GameStarted      bool
+	GameEnded        bool
 	CurrentTurn      int
 	GameDirection    bool
-	ActivePlayer     *game.Player //pointer to active player
-	mu               sync.Mutex
+	ActivePlayer     *game.Player
+	mu               sync.RWMutex
 	TopCard          game.Card
 	TopColor         color.Color
 	GameFirstMove    bool
@@ -32,56 +32,114 @@ type Game struct {
 }
 
 func NewGame() *Game {
-	gameDeck := game.NewGameDeck() //Initialised Game Deck
+	gameDeck := game.NewGameDeck()
 	disposedGameDeck := &game.GameDeck{
 		Deck: &game.Deck{
-			Cards: make([]game.Card, 0), // Initialize the Cards slice
+			Cards: make([]game.Card, 0),
 		},
 	}
-	var (
-		game = &Game{
-			Players:          make([]*game.Player, 0),
-			GameDeck:         gameDeck,
-			DisposedGameDeck: disposedGameDeck,
-			GameStarted:      false,
-			GameDirection:    false,
-			Network:          *NewNetwork(),
-		}
-	)
-	game.SetTopCard(*gameDeck.GetStartCard())
-	return game
+	g := &Game{
+		Players:          make([]*game.Player, 0),
+		GameDeck:         gameDeck,
+		DisposedGameDeck: disposedGameDeck,
+		GameStarted:      false,
+		GameEnded:        false,
+		GameDirection:    false,
+		Network:          *NewNetwork(),
+	}
+	if startCard := gameDeck.GetStartCard(); startCard != nil {
+		g.SetTopCard(*startCard)
+	}
+	return g
 }
 
 func (g *Game) AddPlayer(player *game.Player) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	player.AddCards(g.GameDeck.Cut(7))
+	cards := g.drawCards(7)
+	player.AddCards(cards)
 	g.Players = append(g.Players, player)
 }
 
+func (g *Game) RemovePlayer(player *game.Player) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, p := range g.Players {
+		if p == player {
+			g.Players = append(g.Players[:i], g.Players[i+1:]...)
+			break
+		}
+	}
+}
+
+// drawCards draws cards from the deck, reshuffling discard pile if needed
+// Must be called with g.mu held
+func (g *Game) drawCards(count int) []game.Card {
+	if len(g.GameDeck.Deck.Cards) < count {
+		g.shuffleDiscardPileToDeck()
+	}
+	return g.GameDeck.Cut(count)
+}
+
+// shuffleDiscardPileToDeck reshuffles the discard pile back into the deck
+// Must be called with g.mu held
+func (g *Game) shuffleDiscardPileToDeck() {
+	if len(g.DisposedGameDeck.Deck.Cards) == 0 {
+		return
+	}
+
+	rand.Shuffle(len(g.DisposedGameDeck.Deck.Cards), func(i, j int) {
+		g.DisposedGameDeck.Deck.Cards[i], g.DisposedGameDeck.Deck.Cards[j] = g.DisposedGameDeck.Deck.Cards[j], g.DisposedGameDeck.Deck.Cards[i]
+	})
+
+	g.GameDeck.Deck.Cards = append(g.GameDeck.Deck.Cards, g.DisposedGameDeck.Deck.Cards...)
+	g.GameDeck.Deck.Counter = len(g.GameDeck.Deck.Cards)
+	g.DisposedGameDeck.Deck.Cards = make([]game.Card, 0)
+	g.DisposedGameDeck.Deck.Counter = 0
+
+	g.Network.BroadcastInfoMessage("Deck reshuffled from discard pile.")
+}
+
 func (g *Game) NextTurn() {
+	if g.ActivePlayer == nil || g.GameEnded {
+		return
+	}
+
 	g.ActivePlayer.Drawn = false
-	//check for Game winner
+
+	// Check for game winner
 	if g.ActivePlayer.Deck.NumberOfCards() == 0 {
 		g.declareWinner(g.ActivePlayer)
+		return
 	}
-	//Check for UNO
+
+	// Check for UNO
 	if g.ActivePlayer.Deck.NumberOfCards() == 1 {
 		g.checkforUNO(g.ActivePlayer)
 	}
 
-	integerDirection := convertDirectionToInteger(g.GameDirection)
+	if len(g.Players) == 0 {
+		return
+	}
 
+	integerDirection := convertDirectionToInteger(g.GameDirection)
 	nextTurn := (g.CurrentTurn + integerDirection) % len(g.Players)
 	if nextTurn < 0 {
 		nextTurn += len(g.Players)
 	}
 
 	g.SetActivePlayer(nextTurn)
-	g.Network.SendInfoMessage(g.ActivePlayer, "It is your turn.")
+	if g.ActivePlayer != nil {
+		g.Network.SendInfoMessage(g.ActivePlayer, "It is your turn.")
+	}
 }
 func (g *Game) Start() {
-	// Start the first player's turn
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if len(g.Players) == 0 {
+		return
+	}
 	g.GameFirstMove = true
 	g.SetActivePlayer(0)
 	g.GameStarted = true
@@ -90,6 +148,16 @@ func (g *Game) Start() {
 func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	if g.GameEnded {
+		return
+	}
+
+	// Bounds check for card index
+	if index < 0 || index >= len(p.Deck.Cards) {
+		g.Network.SendInfoMessage(p, "Invalid card index.")
+		return
+	}
 
 	card := p.Deck.Cards[index]
 
@@ -105,8 +173,11 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 		g.Network.BroadcastInfoMessage(fmt.Sprintf("%s played %s and changed the color to %s", p.Name, card.LogCard(), newColor))
 
 		if card.Rank == rank.DRAW_4 {
-			g.PerformDrawAction(g.getNextPlayer(), 4)
-			g.skipNextTurn()
+			nextPlayer := g.getNextPlayer()
+			if nextPlayer != nil {
+				g.performDrawActionLocked(nextPlayer, 4)
+				g.skipNextTurn()
+			}
 		}
 		g.NextTurn()
 	case g.IsValidMove(card, p):
@@ -123,8 +194,10 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 	}
 }
 
-
-func(g *Game) SetActivePlayer(index int) {
+func (g *Game) SetActivePlayer(index int) {
+	if index < 0 || index >= len(g.Players) {
+		return
+	}
 	g.CurrentTurn = index
 	g.ActivePlayer = g.Players[index]
 }
@@ -150,31 +223,29 @@ func (g *Game) IsValidMove(playedCard game.Card, player *game.Player) bool {
 	return playedCard.IsSameColor(g.TopCard) || playedCard.IsSameRank(g.TopCard)
 }
 
-func (g *Game) PerformDrawAction(player *game.Player, card_count int) {
-	cardsDrawn := g.GameDeck.Cut(card_count)
-	player.AddCards(cardsDrawn)
-	for _, card := range cardsDrawn {
-		g.Network.SendInfoMessage(player, fmt.Sprintf("%s Drew %s", player.Name, card.LogCard()))
-	}
-	g.Network.SendInfoMessage(player, fmt.Sprintf("%s Drew Drew %d cards  ", player.Name, card_count))
-
+func (g *Game) PerformDrawAction(player *game.Player, cardCount int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.performDrawActionLocked(player, cardCount)
 }
 
-func (g *Game) ShuffleDiscardPileToDeck() {
-	if len(g.DisposedGameDeck.Deck.Cards) > 0 {
-		// Shuffle the discard pile
-		rand.Seed(time.Now().UnixNano())
-		rand.Shuffle(len(g.DisposedGameDeck.Deck.Cards), func(i, j int) {
-			g.DisposedGameDeck.Deck.Cards[i], g.DisposedGameDeck.Deck.Cards[j] = g.DisposedGameDeck.Deck.Cards[j], g.DisposedGameDeck.Deck.Cards[i]
-		})
-
-		// Create a new deck from the shuffled discard pile
-		g.GameDeck.Deck.Cards = g.DisposedGameDeck.Deck.Cards
-		g.GameDeck.Deck.Counter = g.DisposedGameDeck.Deck.Counter
-
-		// Clear the discard pile
-		g.DisposedGameDeck.Deck.Cards = make([]game.Card, 0)
+// performDrawActionLocked performs draw action - must be called with g.mu held
+func (g *Game) performDrawActionLocked(player *game.Player, cardCount int) {
+	if player == nil {
+		return
 	}
+
+	cardsDrawn := g.drawCards(cardCount)
+	if len(cardsDrawn) == 0 {
+		g.Network.SendInfoMessage(player, "No cards available to draw.")
+		return
+	}
+
+	player.AddCards(cardsDrawn)
+	for _, card := range cardsDrawn {
+		g.Network.SendInfoMessage(player, fmt.Sprintf("%s drew %s", player.Name, card.LogCard()))
+	}
+	g.Network.SendInfoMessage(player, fmt.Sprintf("%s drew %d card(s)", player.Name, len(cardsDrawn)))
 }
 
 // reverseGameDirection reverses the game direction
@@ -185,21 +256,28 @@ func (g *Game) reverseGameDirection() {
 // skipNextTurn skips the next player's turn
 func (g *Game) skipNextTurn() {
 	nextPlayer := g.getNextPlayer()
-	g.Network.SendInfoMessage(nextPlayer, "Your turn is SKIPPED")
-
+	if nextPlayer != nil {
+		g.Network.SendInfoMessage(nextPlayer, "Your turn is SKIPPED")
+	}
 	g.switchtoNextPlayer()
 }
 
 // declareWinner declares the winner of the game
 func (g *Game) declareWinner(winner *game.Player) {
+	g.GameEnded = true
+
 	for _, p := range g.Players {
 		g.Network.SendInfoMessage(p, fmt.Sprintf("%s HAS WON THE GAME!!!!", winner.Name))
 	}
 	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("GAME OVER  %s ,CLOSING CONNECTION ", winner.Name))
+		g.Network.SendInfoMessage(p, fmt.Sprintf("GAME OVER %s, CLOSING CONNECTION", winner.Name))
 		g.Network.CloseConnection(p)
 	}
-	// Perform any necessary  end-game animation with bubbleTea
+
+	// Cleanup the room
+	if g.Room != nil {
+		go g.Room.cleanup()
+	}
 }
 func (g *Game) checkforUNO(player *game.Player) {
 	for _, p := range g.Players {
@@ -209,12 +287,18 @@ func (g *Game) checkforUNO(player *game.Player) {
 
 // getNextPlayer returns the next player based on the game direction
 func (g *Game) getNextPlayer() *game.Player {
-	integerDirection := convertDirectionToInteger(g.GameDirection)
+	if len(g.Players) == 0 {
+		return nil
+	}
 
+	integerDirection := convertDirectionToInteger(g.GameDirection)
 	nextTurn := (g.CurrentTurn + integerDirection) % len(g.Players)
 	if nextTurn < 0 {
 		nextTurn += len(g.Players)
+	}
 
+	if nextTurn < 0 || nextTurn >= len(g.Players) {
+		return nil
 	}
 	return g.Players[nextTurn]
 }
@@ -233,56 +317,71 @@ func (g *Game) dealwithActionCards(card game.Card) {
 	case "skip":
 		g.skipNextTurn()
 	case "draw_2":
-		g.PerformDrawAction(g.getNextPlayer(), 2)
-		g.skipNextTurn()
+		nextPlayer := g.getNextPlayer()
+		if nextPlayer != nil {
+			g.performDrawActionLocked(nextPlayer, 2)
+			g.skipNextTurn()
+		}
 	case "reverse":
-		log.Println("game direction will be reversed")
-		log.Println("Current Turn: ", g.ActivePlayer.Name)
 		g.reverseGameDirection()
-		log.Println("Game direction reversed now")
 	default:
-		// Handle unexpected card types here, e.g., log an error
-		fmt.Println("Unexpected card type:", cardType)
+		log.Printf("Unexpected card type: %s", cardType)
 	}
 }
 
 func (g *Game) switchtoNextPlayer() {
+	if len(g.Players) == 0 {
+		return
+	}
 	integerDirection := convertDirectionToInteger(g.GameDirection)
 	g.CurrentTurn = (g.CurrentTurn + integerDirection) % len(g.Players)
 	if g.CurrentTurn < 0 {
 		g.CurrentTurn += len(g.Players)
-
 	}
 }
 
 func (g *Game) HandleCommand(data []byte, player *game.Player) {
 	cmd, err := commands.DeserializeCommand(data)
 	if err != nil {
-		log.Fatalf("Failed to deserialize command: %v", err)
+		log.Printf("Failed to deserialize command from player %s: %v", player.Name, err)
+		g.Network.SendInfoMessage(player, "Invalid command format.")
+		return
+	}
+
+	g.mu.Lock()
+	activePlayer := g.ActivePlayer
+	topCard := g.TopCard
+	gameEnded := g.GameEnded
+	g.mu.Unlock()
+
+	if gameEnded {
+		return
 	}
 
 	switch c := cmd.(type) {
 	case *commands.SyncCommand:
 		g.SyncPlayer(player)
 	case *commands.PlayCardCommand:
-		if g.ActivePlayer == player {
+		if activePlayer == player {
 			g.PlayCard(player, c.CardIndex, c.NewColor)
+		} else {
+			g.Network.SendInfoMessage(player, "It's not your turn.")
 		}
 		g.SyncAllPlayers()
-	case *commands.DrawCardComamnd:
-		if (g.ActivePlayer == player && player.Drawn == false){
-			g.PerformDrawAction(player, 1)
+	case *commands.DrawCardCommand:
+		g.mu.Lock()
+		if g.ActivePlayer == player && !player.Drawn {
+			g.performDrawActionLocked(player, 1)
 			player.Drawn = true
 		}
-		if (!g.ActivePlayer.HasPlayableCard(g.TopCard)) {
+		if g.ActivePlayer != nil && !g.ActivePlayer.HasPlayableCard(topCard) {
 			g.NextTurn()
 		}
+		g.mu.Unlock()
 		g.SyncAllPlayers()
 	default:
 		log.Printf("Unknown command type: %T", c)
-
 	}
-
 }
 
 func (g *Game) SyncPlayer(p *game.Player) {
@@ -291,14 +390,17 @@ func (g *Game) SyncPlayer(p *game.Player) {
 		return
 	}
 
+	g.mu.RLock()
 	activePlayer := g.ActivePlayer
 	if activePlayer == nil {
+		g.mu.RUnlock()
 		log.Printf("ActivePlayer is nil; cannot sync")
 		return
 	}
 
-	if activePlayer.Name == "" {
-		log.Printf("ActivePlayer's Name is empty; cannot sync")
+	if g.Room == nil {
+		g.mu.RUnlock()
+		log.Printf("Room is nil; cannot sync")
 		return
 	}
 
@@ -316,15 +418,19 @@ func (g *Game) SyncPlayer(p *game.Player) {
 			MaxPlayers: g.Room.maxPlayers,
 		},
 	}
+	g.mu.RUnlock()
 
-	conn, ok := g.Network.clients[*p]
-	if !ok {
+	g.Network.mu.RLock()
+	conn, connOk := g.Network.clients[*p]
+	lock, lockOk := g.Network.locks[*p]
+	g.Network.mu.RUnlock()
+
+	if !connOk {
 		log.Printf("Player %s not found in network clients", p.Name)
 		return
 	}
 
-	lock, ok := g.Network.locks[*p]
-	if !ok {
+	if !lockOk {
 		log.Printf("No mutex found for player %s", p.Name)
 		return
 	}
@@ -339,16 +445,18 @@ func (g *Game) SyncPlayer(p *game.Player) {
 }
 
 func (g *Game) SyncAllPlayers() {
+	g.mu.RLock()
+	players := make([]*game.Player, len(g.Players))
+	copy(players, g.Players)
+	g.mu.RUnlock()
+
 	var wg sync.WaitGroup
-
-	for _, playerPtr := range g.Players {
+	for _, playerPtr := range players {
 		wg.Add(1)
-
 		go func(player *game.Player) {
 			defer wg.Done()
 			g.SyncPlayer(player)
 		}(playerPtr)
 	}
-
 	wg.Wait()
 }
