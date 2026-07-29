@@ -1,4 +1,4 @@
 package commands
 
-type DrawCardComamnd struct {
+type DrawCardCommand struct {
 }
