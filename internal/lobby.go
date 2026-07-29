@@ -12,15 +12,46 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	MaxPlayerNameLength = 32
+	MinPlayerNameLength = 1
+	MinPlayers          = 2
+	MaxPlayersPerRoom   = 10
+)
+
+var playerNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
 // Room represents a game room
 type Room struct {
 	id         int
 	game       Game
 	maxPlayers int
+	mu         sync.RWMutex
 }
 
-func NewRoom(maxPlayers int) *Room {
-	roomId := generateID()
+const (
+	ROOM_START_INDEX = 1000
+	ROOM_END_INDEX   = 9999
+	MAX_ROOMS        = ROOM_END_INDEX - ROOM_START_INDEX
+)
+
+var (
+	rooms   = make(map[int]*Room)
+	roomsMu sync.RWMutex
+)
+
+func NewRoom(maxPlayers int) (*Room, error) {
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+
+	if len(rooms) >= MAX_ROOMS {
+		return nil, fmt.Errorf("maximum number of rooms reached")
+	}
+
+	roomId := generateUniqueID()
+	if roomId == -1 {
+		return nil, fmt.Errorf("failed to generate unique room ID")
+	}
 
 	r := &Room{
 		id:         roomId,
@@ -29,19 +60,47 @@ func NewRoom(maxPlayers int) *Room {
 	}
 	r.game.Room = r
 	rooms[roomId] = r
-	return r
+	return r, nil
 }
 
-const (
-	ROOM_START_INDEX = 1000
-	ROOM_END_INDEX   = 9999
-	MAX_ROOMS = ROOM_END_INDEX - ROOM_START_INDEX
-)
+func (r *Room) handlePlayerDisconnect(player *game.Player) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-var rooms map[int]*Room
+	// Remove player from game
+	r.game.RemovePlayer(player)
 
-func init() {
-	rooms = make(map[int]*Room)
+	// If no players left, cleanup the room
+	if len(r.game.Players) == 0 {
+		r.cleanup()
+	}
+}
+
+func (r *Room) cleanup() {
+	r.game.Network.StopBroadcaster()
+	roomsMu.Lock()
+	delete(rooms, r.id)
+	roomsMu.Unlock()
+}
+
+func GetRoom(roomId int) (*Room, bool) {
+	roomsMu.RLock()
+	defer roomsMu.RUnlock()
+	room, ok := rooms[roomId]
+	return room, ok
+}
+
+func validatePlayerName(name string) error {
+	if len(name) < MinPlayerNameLength {
+		return fmt.Errorf("player name too short (min %d characters)", MinPlayerNameLength)
+	}
+	if len(name) > MaxPlayerNameLength {
+		return fmt.Errorf("player name too long (max %d characters)", MaxPlayerNameLength)
+	}
+	if !playerNameRegex.MatchString(name) {
+		return fmt.Errorf("player name contains invalid characters (only alphanumeric, underscore, hyphen allowed)")
+	}
+	return nil
 }
 
 // CreateRoomHandler handles requests to create a new room
@@ -53,8 +112,8 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Get query parameters
 	playerName := r.URL.Query().Get("player_name")
-	if playerName == "" {
-		http.Error(w, "Missing player_name parameter", http.StatusBadRequest)
+	if err := validatePlayerName(playerName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
