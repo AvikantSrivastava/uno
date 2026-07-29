@@ -208,8 +208,27 @@ func UpgradeWebsocket(w http.ResponseWriter, r *http.Request, room *Room) *webso
 	return conn
 }
 
-// Generate a unique room id
-func generateID() int {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return ROOM_START_INDEX + r.Intn(ROOM_END_INDEX-ROOM_START_INDEX+1)
+// generateUniqueID generates a unique room id, avoiding collisions
+// Must be called with roomsMu held
+func generateUniqueID() int {
+	if len(rooms) >= MAX_ROOMS {
+		return -1
+	}
+
+	// Try random IDs first (faster in most cases)
+	for i := 0; i < 100; i++ {
+		id := ROOM_START_INDEX + rand.Intn(ROOM_END_INDEX-ROOM_START_INDEX+1)
+		if _, exists := rooms[id]; !exists {
+			return id
+		}
+	}
+
+	// Fallback: linear search for available ID
+	for id := ROOM_START_INDEX; id <= ROOM_END_INDEX; id++ {
+		if _, exists := rooms[id]; !exists {
+			return id
+		}
+	}
+
+	return -1
 }
