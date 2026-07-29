@@ -180,6 +180,10 @@ func (n *Network) BroadcastConnectionInfo() {
 }
 
 func (n *Network) CloseConnection(p *game.Player) {
-	conn := n.clients[*p]
-	conn.Close()
+	n.mu.RLock()
+	conn, exists := n.clients[*p]
+	n.mu.RUnlock()
+	if exists && conn != nil {
+		conn.Close()
+	}
 }
