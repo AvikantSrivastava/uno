@@ -16,7 +16,7 @@ type Network struct {
 	broadcast         chan string
 	syncChannel       chan string
 	gameStarted       bool
-	locks             map[game.Player]*sync.Mutex
+	locks             map[string]*sync.Mutex
 	wg                *sync.WaitGroup
 	mu                sync.RWMutex
 	broadcastStarted  bool
@@ -25,7 +25,7 @@ type Network struct {
 
 func NewNetwork() *Network {
 	return &Network{
-		clients: make(map[game.Player]*websocket.Conn),
+		clients: make(map[string]*websocket.Conn),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Accepts requests from every source
@@ -33,7 +33,7 @@ func NewNetwork() *Network {
 		},
 		broadcast:         make(chan string),
 		gameStarted:       false,
-		locks:             make(map[game.Player]*sync.Mutex),
+		locks:             make(map[string]*sync.Mutex),
 		wg:                &sync.WaitGroup{},
 		broadcastStarted:  false,
 		broadcastStopChan: make(chan struct{}),

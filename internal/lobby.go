@@ -131,13 +131,13 @@ func GetRoom(roomId int) (*Room, bool) {
 
 func validatePlayerName(name string) error {
 	if len(name) < MinPlayerNameLength {
-		return fmt.Errorf("player name too short (min %d characters)", MinPlayerNameLength)
+		return fmt.Errorf("Name is too short")
 	}
 	if len(name) > MaxPlayerNameLength {
-		return fmt.Errorf("player name too long (max %d characters)", MaxPlayerNameLength)
+		return fmt.Errorf("Name is too long (max %d characters)", MaxPlayerNameLength)
 	}
 	if !playerNameRegex.MatchString(name) {
-		return fmt.Errorf("player name contains invalid characters (only alphanumeric, underscore, hyphen allowed)")
+		return fmt.Errorf("Name can only have letters, numbers, _ and -")
 	}
 	return nil
 }
@@ -152,18 +152,18 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	maxPlayersStr := r.URL.Query().Get("max_players")
 	if maxPlayersStr == "" {
-		http.Error(w, "Missing max_players parameter", http.StatusBadRequest)
+		http.Error(w, "Please specify number of players", http.StatusBadRequest)
 		return
 	}
 
 	maxPlayers, err := strconv.Atoi(maxPlayersStr)
 	if err != nil {
-		http.Error(w, "Invalid max_players parameter", http.StatusBadRequest)
+		http.Error(w, "Invalid number of players", http.StatusBadRequest)
 		return
 	}
 
 	if maxPlayers < MinPlayers || maxPlayers > MaxPlayersPerRoom {
-		http.Error(w, fmt.Sprintf("max_players must be between %d and %d", MinPlayers, MaxPlayersPerRoom), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Players must be between %d and %d", MinPlayers, MaxPlayersPerRoom), http.StatusBadRequest)
 		return
 	}
 
@@ -187,6 +187,7 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	g.Network.AddClient(*player, conn)
 
+	upperName := strings.ToUpper(playerName)
 	dto := dtos.ConnectionDTO{
 		PlayerName:  upperName,
 		RoomID:      room.id,
@@ -211,19 +212,19 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	roomIdStr := r.URL.Query().Get("room_id")
 	if roomIdStr == "" {
-		http.Error(w, "room_id is required", http.StatusBadRequest)
+		http.Error(w, "Please enter a room code", http.StatusBadRequest)
 		return
 	}
 
 	roomId, err := strconv.Atoi(roomIdStr)
 	if err != nil {
-		http.Error(w, "room_id must be a valid integer", http.StatusBadRequest)
+		http.Error(w, "Room code should be a number", http.StatusBadRequest)
 		return
 	}
 
 	room, ok := GetRoom(roomId)
 	if !ok {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		http.Error(w, "Room not found. Check the code and try again", http.StatusNotFound)
 		return
 	}
 
@@ -255,6 +256,7 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		room.mu.Lock()
 	}
+	room.mu.Unlock()
 
 	conn := UpgradeWebsocket(w, r, room)
 	if conn == nil {
@@ -264,6 +266,7 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 	g := &room.game
 	g.Network.AddClient(*player, conn)
 
+	upperName := strings.ToUpper(playerName)
 	dto := dtos.ConnectionDTO{
 		PlayerName:  upperName,
 		RoomID:      room.id,
@@ -288,7 +291,7 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 func AddPlayerToRoom(roomId int, playerName string) (*game.Player, error) {
 	room, ok := GetRoom(roomId)
 	if !ok {
-		return nil, fmt.Errorf("room not found")
+		return nil, fmt.Errorf("Room not found")
 	}
 
 	room.mu.Lock()
@@ -296,7 +299,7 @@ func AddPlayerToRoom(roomId int, playerName string) (*game.Player, error) {
 
 	g := &room.game
 	if len(g.Players) >= room.maxPlayers {
-		return nil, fmt.Errorf("room is full")
+		return nil, fmt.Errorf("This room is full")
 	}
 
 	player := game.NewPlayer(playerName)
