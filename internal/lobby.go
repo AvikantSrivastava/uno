@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"uno/models/dtos"
 	"uno/models/game"
@@ -46,12 +47,12 @@ func NewRoom(maxPlayers int) (*Room, error) {
 	defer roomsMu.Unlock()
 
 	if len(rooms) >= MAX_ROOMS {
-		return nil, fmt.Errorf("maximum number of rooms reached")
+		return nil, fmt.Errorf("Server is busy! Try again later")
 	}
 
 	roomId := generateUniqueID()
 	if roomId == -1 {
-		return nil, fmt.Errorf("failed to generate unique room ID")
+		return nil, fmt.Errorf("Couldn't create room, please try again")
 	}
 
 	r := &Room{
@@ -68,8 +69,8 @@ func (r *Room) handlePlayerDisconnect(player *game.Player) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Remove player from game
-	r.game.RemovePlayer(player)
+	// Mark player as disconnected instead of removing
+	player.Connected = false
 
 	// Broadcast disconnect message
 	r.game.Network.BroadcastInfoMessage(fmt.Sprintf("%s disconnected", player.Name))
@@ -82,6 +83,36 @@ func (r *Room) handlePlayerDisconnect(player *game.Player) {
 			break
 		}
 	}
+
+	// If all players disconnected, cleanup the room
+	if allDisconnected {
+		r.cleanup()
+	} else {
+		// If it was their turn, move to next connected player
+		r.game.SkipToNextConnectedPlayer()
+	}
+}
+
+// FindDisconnectedPlayer finds a disconnected player by name in the room
+func (r *Room) FindDisconnectedPlayer(name string) *game.Player {
+	upperName := strings.ToUpper(name)
+	for _, p := range r.game.Players {
+		if p.Name == upperName && !p.Connected {
+			return p
+		}
+	}
+	return nil
+}
+
+// FindPlayerByName finds any player by name in the room
+func (r *Room) FindPlayerByName(name string) *game.Player {
+	upperName := strings.ToUpper(name)
+	for _, p := range r.game.Players {
+		if p.Name == upperName {
+			return p
+		}
+	}
+	return nil
 }
 
 func (r *Room) cleanup() {
@@ -157,10 +188,11 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 	g.Network.AddClient(*player, conn)
 
 	dto := dtos.ConnectionDTO{
-		PlayerName: playerName,
-		RoomID:     room.id,
-		MaxPlayers: maxPlayers,
-		Players:    room.game.getAllPlayers(),
+		PlayerName:  upperName,
+		RoomID:      room.id,
+		MaxPlayers:  maxPlayers,
+		Players:     room.game.getAllPlayers(),
+		IsReconnect: false,
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
 		g.Network.RemoveClient(*player)
@@ -195,10 +227,33 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	player, err := AddPlayerToRoom(roomId, playerName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	// Check if this is a reconnection attempt
+	room.mu.Lock()
+	existingPlayer := room.FindPlayerByName(playerName)
+
+	var player *game.Player
+	var isReconnect bool
+
+	if existingPlayer != nil {
+		if existingPlayer.Connected {
+			room.mu.Unlock()
+			http.Error(w, "This name is already taken in this room", http.StatusBadRequest)
+			return
+		}
+		// Reconnection - reuse existing player
+		player = existingPlayer
+		player.Connected = true
+		isReconnect = true
+	} else {
+		room.mu.Unlock()
+		// New player joining
+		var err error
+		player, err = AddPlayerToRoom(roomId, playerName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		room.mu.Lock()
 	}
 
 	conn := UpgradeWebsocket(w, r, room)
@@ -210,14 +265,21 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 	g.Network.AddClient(*player, conn)
 
 	dto := dtos.ConnectionDTO{
-		PlayerName: playerName,
-		RoomID:     room.id,
-		MaxPlayers: room.maxPlayers,
-		Players:    room.game.getAllPlayers(),
+		PlayerName:  upperName,
+		RoomID:      room.id,
+		MaxPlayers:  room.maxPlayers,
+		Players:     room.game.getAllPlayers(),
+		IsReconnect: isReconnect,
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
 		g.Network.RemoveClient(*player)
 		return
+	}
+
+	if isReconnect {
+		g.Network.BroadcastInfoMessage(fmt.Sprintf("%s is back!", upperName))
+		// Sync the reconnected player with current game state
+		g.SyncPlayer(player)
 	}
 
 	g.Network.ListenToClient(player, room)

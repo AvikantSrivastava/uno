@@ -122,15 +122,62 @@ func (g *Game) NextTurn() {
 		return
 	}
 
-	integerDirection := convertDirectionToInteger(g.GameDirection)
-	nextTurn := (g.CurrentTurn + integerDirection) % len(g.Players)
-	if nextTurn < 0 {
-		nextTurn += len(g.Players)
+	// Find next connected player
+	nextTurn := g.findNextConnectedPlayer(g.CurrentTurn)
+	if nextTurn == -1 {
+		return // No connected players
 	}
 
 	g.SetActivePlayer(nextTurn)
-	if g.ActivePlayer != nil {
-		g.Network.SendInfoMessage(g.ActivePlayer, "It is your turn.")
+	if g.ActivePlayer != nil && g.ActivePlayer.Connected {
+		g.Network.SendInfoMessage(g.ActivePlayer, "Your turn! Make your move")
+	}
+}
+
+// findNextConnectedPlayer finds the next connected player starting from current position
+func (g *Game) findNextConnectedPlayer(fromIndex int) int {
+	if len(g.Players) == 0 {
+		return -1
+	}
+
+	integerDirection := convertDirectionToInteger(g.GameDirection)
+	checked := 0
+
+	for checked < len(g.Players) {
+		fromIndex = (fromIndex + integerDirection) % len(g.Players)
+		if fromIndex < 0 {
+			fromIndex += len(g.Players)
+		}
+
+		if g.Players[fromIndex].Connected {
+			return fromIndex
+		}
+		checked++
+	}
+
+	return -1 // No connected players found
+}
+
+// SkipToNextConnectedPlayer moves turn to next connected player (called when current player disconnects)
+func (g *Game) SkipToNextConnectedPlayer() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.ActivePlayer == nil || g.GameEnded {
+		return
+	}
+
+	// If current active player is disconnected, move to next
+	if !g.ActivePlayer.Connected {
+		nextTurn := g.findNextConnectedPlayer(g.CurrentTurn)
+		if nextTurn == -1 {
+			return // No connected players
+		}
+		g.SetActivePlayer(nextTurn)
+		if g.ActivePlayer != nil && g.ActivePlayer.Connected {
+			g.Network.SendInfoMessage(g.ActivePlayer, "Your turn! Make your move")
+			g.SyncAllPlayers()
+		}
 	}
 }
 func (g *Game) Start() {
