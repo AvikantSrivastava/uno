@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"uno/models/dtos"
 	"uno/models/game"
@@ -46,12 +47,12 @@ func NewRoom(maxPlayers int) (*Room, error) {
 	defer roomsMu.Unlock()
 
 	if len(rooms) >= MAX_ROOMS {
-		return nil, fmt.Errorf("maximum number of rooms reached")
+		return nil, fmt.Errorf("Server is busy! Try again later")
 	}
 
 	roomId := generateUniqueID()
 	if roomId == -1 {
-		return nil, fmt.Errorf("failed to generate unique room ID")
+		return nil, fmt.Errorf("Couldn't create room, please try again")
 	}
 
 	r := &Room{
@@ -68,13 +69,50 @@ func (r *Room) handlePlayerDisconnect(player *game.Player) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Remove player from game
-	r.game.RemovePlayer(player)
+	// Mark player as disconnected instead of removing
+	player.Connected = false
 
-	// If no players left, cleanup the room
-	if len(r.game.Players) == 0 {
-		r.cleanup()
+	// Broadcast disconnect message
+	r.game.Network.BroadcastInfoMessage(fmt.Sprintf("%s disconnected", player.Name))
+
+	// Check if all players are disconnected
+	allDisconnected := true
+	for _, p := range r.game.Players {
+		if p.Connected {
+			allDisconnected = false
+			break
+		}
 	}
+
+	// If all players disconnected, cleanup the room
+	if allDisconnected {
+		r.cleanup()
+	} else {
+		// If it was their turn, move to next connected player
+		r.game.SkipToNextConnectedPlayer()
+	}
+}
+
+// FindDisconnectedPlayer finds a disconnected player by name in the room
+func (r *Room) FindDisconnectedPlayer(name string) *game.Player {
+	upperName := strings.ToUpper(name)
+	for _, p := range r.game.Players {
+		if p.Name == upperName && !p.Connected {
+			return p
+		}
+	}
+	return nil
+}
+
+// FindPlayerByName finds any player by name in the room
+func (r *Room) FindPlayerByName(name string) *game.Player {
+	upperName := strings.ToUpper(name)
+	for _, p := range r.game.Players {
+		if p.Name == upperName {
+			return p
+		}
+	}
+	return nil
 }
 
 func (r *Room) cleanup() {
@@ -93,13 +131,13 @@ func GetRoom(roomId int) (*Room, bool) {
 
 func validatePlayerName(name string) error {
 	if len(name) < MinPlayerNameLength {
-		return fmt.Errorf("player name too short (min %d characters)", MinPlayerNameLength)
+		return fmt.Errorf("Name is too short")
 	}
 	if len(name) > MaxPlayerNameLength {
-		return fmt.Errorf("player name too long (max %d characters)", MaxPlayerNameLength)
+		return fmt.Errorf("Name is too long (max %d characters)", MaxPlayerNameLength)
 	}
 	if !playerNameRegex.MatchString(name) {
-		return fmt.Errorf("player name contains invalid characters (only alphanumeric, underscore, hyphen allowed)")
+		return fmt.Errorf("Name can only have letters, numbers, _ and -")
 	}
 	return nil
 }
@@ -114,18 +152,18 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	maxPlayersStr := r.URL.Query().Get("max_players")
 	if maxPlayersStr == "" {
-		http.Error(w, "Missing max_players parameter", http.StatusBadRequest)
+		http.Error(w, "Please specify number of players", http.StatusBadRequest)
 		return
 	}
 
 	maxPlayers, err := strconv.Atoi(maxPlayersStr)
 	if err != nil {
-		http.Error(w, "Invalid max_players parameter", http.StatusBadRequest)
+		http.Error(w, "Invalid number of players", http.StatusBadRequest)
 		return
 	}
 
 	if maxPlayers < MinPlayers || maxPlayers > MaxPlayersPerRoom {
-		http.Error(w, fmt.Sprintf("max_players must be between %d and %d", MinPlayers, MaxPlayersPerRoom), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("Players must be between %d and %d", MinPlayers, MaxPlayersPerRoom), http.StatusBadRequest)
 		return
 	}
 
@@ -149,11 +187,13 @@ func CreateRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	g.Network.AddClient(*player, conn)
 
+	upperName := strings.ToUpper(playerName)
 	dto := dtos.ConnectionDTO{
-		PlayerName: playerName,
-		RoomID:     room.id,
-		MaxPlayers: maxPlayers,
-		Players:    room.game.getAllPlayers(),
+		PlayerName:  upperName,
+		RoomID:      room.id,
+		MaxPlayers:  maxPlayers,
+		Players:     room.game.getAllPlayers(),
+		IsReconnect: false,
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
 		g.Network.RemoveClient(*player)
@@ -172,27 +212,51 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 
 	roomIdStr := r.URL.Query().Get("room_id")
 	if roomIdStr == "" {
-		http.Error(w, "room_id is required", http.StatusBadRequest)
+		http.Error(w, "Please enter a room code", http.StatusBadRequest)
 		return
 	}
 
 	roomId, err := strconv.Atoi(roomIdStr)
 	if err != nil {
-		http.Error(w, "room_id must be a valid integer", http.StatusBadRequest)
+		http.Error(w, "Room code should be a number", http.StatusBadRequest)
 		return
 	}
 
 	room, ok := GetRoom(roomId)
 	if !ok {
-		http.Error(w, "Room not found", http.StatusNotFound)
+		http.Error(w, "Room not found. Check the code and try again", http.StatusNotFound)
 		return
 	}
 
-	player, err := AddPlayerToRoom(roomId, playerName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	// Check if this is a reconnection attempt
+	room.mu.Lock()
+	existingPlayer := room.FindPlayerByName(playerName)
+
+	var player *game.Player
+	var isReconnect bool
+
+	if existingPlayer != nil {
+		if existingPlayer.Connected {
+			room.mu.Unlock()
+			http.Error(w, "This name is already taken in this room", http.StatusBadRequest)
+			return
+		}
+		// Reconnection - reuse existing player
+		player = existingPlayer
+		player.Connected = true
+		isReconnect = true
+	} else {
+		room.mu.Unlock()
+		// New player joining
+		var err error
+		player, err = AddPlayerToRoom(roomId, playerName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		room.mu.Lock()
 	}
+	room.mu.Unlock()
 
 	conn := UpgradeWebsocket(w, r, room)
 	if conn == nil {
@@ -202,15 +266,23 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 	g := &room.game
 	g.Network.AddClient(*player, conn)
 
+	upperName := strings.ToUpper(playerName)
 	dto := dtos.ConnectionDTO{
-		PlayerName: playerName,
-		RoomID:     room.id,
-		MaxPlayers: room.maxPlayers,
-		Players:    room.game.getAllPlayers(),
+		PlayerName:  upperName,
+		RoomID:      room.id,
+		MaxPlayers:  room.maxPlayers,
+		Players:     room.game.getAllPlayers(),
+		IsReconnect: isReconnect,
 	}
 	if err := conn.WriteMessage(websocket.TextMessage, dto.Serialize()); err != nil {
 		g.Network.RemoveClient(*player)
 		return
+	}
+
+	if isReconnect {
+		g.Network.BroadcastInfoMessage(fmt.Sprintf("%s is back!", upperName))
+		// Sync the reconnected player with current game state
+		g.SyncPlayer(player)
 	}
 
 	g.Network.ListenToClient(player, room)
@@ -219,7 +291,7 @@ func JoinRoomHandler(w http.ResponseWriter, r *http.Request) {
 func AddPlayerToRoom(roomId int, playerName string) (*game.Player, error) {
 	room, ok := GetRoom(roomId)
 	if !ok {
-		return nil, fmt.Errorf("room not found")
+		return nil, fmt.Errorf("Room not found")
 	}
 
 	room.mu.Lock()
@@ -227,7 +299,7 @@ func AddPlayerToRoom(roomId int, playerName string) (*game.Player, error) {
 
 	g := &room.game
 	if len(g.Players) >= room.maxPlayers {
-		return nil, fmt.Errorf("room is full")
+		return nil, fmt.Errorf("This room is full")
 	}
 
 	player := game.NewPlayer(playerName)

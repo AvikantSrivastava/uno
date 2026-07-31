@@ -11,12 +11,12 @@ import (
 )
 
 type Network struct {
-	clients           map[game.Player]*websocket.Conn
+	clients           map[string]*websocket.Conn
 	upgrader          websocket.Upgrader
 	broadcast         chan string
 	syncChannel       chan string
 	gameStarted       bool
-	locks             map[game.Player]*sync.Mutex
+	locks             map[string]*sync.Mutex
 	wg                *sync.WaitGroup
 	mu                sync.RWMutex
 	broadcastStarted  bool
@@ -25,7 +25,7 @@ type Network struct {
 
 func NewNetwork() *Network {
 	return &Network{
-		clients: make(map[game.Player]*websocket.Conn),
+		clients: make(map[string]*websocket.Conn),
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Accepts requests from every source
@@ -33,7 +33,7 @@ func NewNetwork() *Network {
 		},
 		broadcast:         make(chan string),
 		gameStarted:       false,
-		locks:             make(map[game.Player]*sync.Mutex),
+		locks:             make(map[string]*sync.Mutex),
 		wg:                &sync.WaitGroup{},
 		broadcastStarted:  false,
 		broadcastStopChan: make(chan struct{}),
@@ -43,32 +43,36 @@ func NewNetwork() *Network {
 func (n *Network) AddClient(player game.Player, conn *websocket.Conn) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.clients[player] = conn
-	n.locks[player] = &sync.Mutex{}
+	// Close existing connection if any (for reconnection)
+	if oldConn, exists := n.clients[player.Name]; exists {
+		oldConn.Close()
+	}
+	n.clients[player.Name] = conn
+	n.locks[player.Name] = &sync.Mutex{}
 }
 
 func (n *Network) RemoveClient(player game.Player) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	if conn, exists := n.clients[player]; exists {
+	if conn, exists := n.clients[player.Name]; exists {
 		conn.Close()
 	}
-	delete(n.clients, player)
-	delete(n.locks, player)
+	delete(n.clients, player.Name)
+	delete(n.locks, player.Name)
 }
 
 func (n *Network) GetClient(player game.Player) (*websocket.Conn, bool) {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	conn, ok := n.clients[player]
+	conn, ok := n.clients[player.Name]
 	return conn, ok
 }
 
-func (n *Network) GetAllClients() map[game.Player]*websocket.Conn {
+func (n *Network) GetAllClients() map[string]*websocket.Conn {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	// Return a copy to avoid race conditions
-	clientsCopy := make(map[game.Player]*websocket.Conn, len(n.clients))
+	clientsCopy := make(map[string]*websocket.Conn, len(n.clients))
 	for k, v := range n.clients {
 		clientsCopy[k] = v
 	}
@@ -110,12 +114,12 @@ func (n *Network) BroadcastMessages() {
 		n.wg.Add(clientCount)
 
 		// Broadcast the message to all players
-		for player, conn := range clients {
-			go func(player game.Player, conn *websocket.Conn, message string) {
+		for playerName, conn := range clients {
+			go func(playerName string, conn *websocket.Conn, message string) {
 				defer n.wg.Done()
 
 				n.mu.RLock()
-				lock, exists := n.locks[player]
+				lock, exists := n.locks[playerName]
 				n.mu.RUnlock()
 
 				if !exists {
@@ -128,18 +132,29 @@ func (n *Network) BroadcastMessages() {
 
 				if err != nil {
 					if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-						fmt.Printf("Unexpected close error for player %s: %v\n", player.Name, err)
+						fmt.Printf("Unexpected close error for player %s: %v\n", playerName, err)
 					} else {
-						fmt.Printf("Error writing message to player %s: %v\n", player.Name, err)
+						fmt.Printf("Error writing message to player %s: %v\n", playerName, err)
 					}
-					n.RemoveClient(player)
+					n.RemoveClientByName(playerName)
 				}
-			}(player, conn, message)
+			}(playerName, conn, message)
 		}
 
 		// Wait for all goroutines to finish broadcasting this message
 		n.wg.Wait()
 	}
+}
+
+// RemoveClientByName removes a client by player name
+func (n *Network) RemoveClientByName(playerName string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if conn, exists := n.clients[playerName]; exists {
+		conn.Close()
+	}
+	delete(n.clients, playerName)
+	delete(n.locks, playerName)
 }
 
 func (n *Network) ListenToClient(player *game.Player, r *Room) {
@@ -162,9 +177,9 @@ func (n *Network) ListenToClient(player *game.Player, r *Room) {
 		go g.SyncAllPlayers()
 
 		g.Network.SendMessage(player, conn_info_dto.Serialize())
-		g.Network.BroadcastInfoMessage("All players have joined. Game has started.")
+		g.Network.BroadcastInfoMessage("Everyone's here! Let's play!")
 	} else {
-		g.Network.BroadcastInfoMessage("Waiting for players to join the game.")
+		g.Network.BroadcastInfoMessage("Waiting for other players to join...")
 	}
 
 	conn, ok := n.GetClient(*player)
@@ -192,8 +207,8 @@ func (n *Network) BroadcastMessage(message []byte) {
 
 func (n *Network) SendMessage(p *game.Player, message []byte) error {
 	n.mu.RLock()
-	conn, connExists := n.clients[*p]
-	lock, lockExists := n.locks[*p]
+	conn, connExists := n.clients[p.Name]
+	lock, lockExists := n.locks[p.Name]
 	n.mu.RUnlock()
 
 	if !connExists {
@@ -215,6 +230,9 @@ func (n *Network) SendMessage(p *game.Player, message []byte) error {
 }
 
 func (n *Network) SendInfoMessage(p *game.Player, message string) {
+	if p == nil || !p.Connected {
+		return // Don't send to disconnected players
+	}
 	dto := dtos.InfoDTO{Message: message}
 	n.SendMessage(p, dto.Serialize())
 }
@@ -230,7 +248,7 @@ func (n *Network) BroadcastConnectionInfo() {
 
 func (n *Network) CloseConnection(p *game.Player) {
 	n.mu.RLock()
-	conn, exists := n.clients[*p]
+	conn, exists := n.clients[p.Name]
 	n.mu.RUnlock()
 	if exists && conn != nil {
 		conn.Close()
