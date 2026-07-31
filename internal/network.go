@@ -162,9 +162,9 @@ func (n *Network) ListenToClient(player *game.Player, r *Room) {
 		go g.SyncAllPlayers()
 
 		g.Network.SendMessage(player, conn_info_dto.Serialize())
-		g.Network.BroadcastInfoMessage("All players have joined. Game has started.")
+		g.Network.BroadcastInfoMessage("Everyone's here! Let's play!")
 	} else {
-		g.Network.BroadcastInfoMessage("Waiting for players to join the game.")
+		g.Network.BroadcastInfoMessage("Waiting for other players to join...")
 	}
 
 	conn, ok := n.GetClient(*player)

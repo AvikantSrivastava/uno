@@ -71,9 +71,16 @@ func (r *Room) handlePlayerDisconnect(player *game.Player) {
 	// Remove player from game
 	r.game.RemovePlayer(player)
 
-	// If no players left, cleanup the room
-	if len(r.game.Players) == 0 {
-		r.cleanup()
+	// Broadcast disconnect message
+	r.game.Network.BroadcastInfoMessage(fmt.Sprintf("%s disconnected", player.Name))
+
+	// Check if all players are disconnected
+	allDisconnected := true
+	for _, p := range r.game.Players {
+		if p.Connected {
+			allDisconnected = false
+			break
+		}
 	}
 }
 

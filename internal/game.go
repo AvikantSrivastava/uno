@@ -97,7 +97,7 @@ func (g *Game) shuffleDiscardPileToDeck() {
 	g.DisposedGameDeck.Deck.Cards = make([]game.Card, 0)
 	g.DisposedGameDeck.Deck.Counter = 0
 
-	g.Network.BroadcastInfoMessage("Deck reshuffled from discard pile.")
+	g.Network.BroadcastInfoMessage("Shuffling the deck...")
 }
 
 func (g *Game) NextTurn() {
@@ -155,7 +155,7 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 
 	// Bounds check for card index
 	if index < 0 || index >= len(p.Deck.Cards) {
-		g.Network.SendInfoMessage(p, "Invalid card index.")
+		g.Network.SendInfoMessage(p, "Hmm, that card doesn't exist")
 		return
 	}
 
@@ -165,12 +165,12 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 	case card.Type() == "action-card-no-color":
 		parsedColor, err := color.ParseColor(newColor)
 		if err != nil {
-			g.Network.SendInfoMessage(p, "Invalid color. Try again.")
+			g.Network.SendInfoMessage(p, "Pick a valid color: red, blue, green, or yellow")
 			return
 		}
 		g.SetTopCard(card, parsedColor)
 		g.DisposedGameDeck.AddCard(p.Deck.RemoveCard(index))
-		g.Network.BroadcastInfoMessage(fmt.Sprintf("%s played %s and changed the color to %s", p.Name, card.LogCard(), newColor))
+		g.Network.BroadcastInfoMessage(fmt.Sprintf("%s played %s - Color is now %s", p.Name, card.LogCard(), newColor))
 
 		if card.Rank == rank.DRAW_4 {
 			nextPlayer := g.getNextPlayer()
@@ -190,7 +190,7 @@ func (g *Game) PlayCard(p *game.Player, index int, newColor string) {
 		g.NextTurn()
 
 	default:
-		g.Network.SendInfoMessage(p, "Invalid move. Wrong card or wrong player. Try again.")
+		g.Network.SendInfoMessage(p, "Can't play that card right now")
 	}
 }
 
@@ -237,13 +237,15 @@ func (g *Game) performDrawActionLocked(player *game.Player, cardCount int) {
 
 	cardsDrawn := g.drawCards(cardCount)
 	if len(cardsDrawn) == 0 {
-		g.Network.SendInfoMessage(player, "No cards available to draw.")
+		g.Network.SendInfoMessage(player, "No cards left in the deck!")
 		return
 	}
 
 	player.AddCards(cardsDrawn)
-	for _, card := range cardsDrawn {
-		g.Network.SendInfoMessage(player, fmt.Sprintf("%s drew %s", player.Name, card.LogCard()))
+	if len(cardsDrawn) == 1 {
+		g.Network.SendInfoMessage(player, fmt.Sprintf("You drew a %s", cardsDrawn[0].LogCard()))
+	} else {
+		g.Network.SendInfoMessage(player, fmt.Sprintf("You picked up %d cards", len(cardsDrawn)))
 	}
 	g.Network.SendInfoMessage(player, fmt.Sprintf("%s drew %d card(s)", player.Name, len(cardsDrawn)))
 }
@@ -257,7 +259,7 @@ func (g *Game) reverseGameDirection() {
 func (g *Game) skipNextTurn() {
 	nextPlayer := g.getNextPlayer()
 	if nextPlayer != nil {
-		g.Network.SendInfoMessage(nextPlayer, "Your turn is SKIPPED")
+		g.Network.SendInfoMessage(nextPlayer, "Oops! Your turn was skipped")
 	}
 	g.switchtoNextPlayer()
 }
@@ -280,9 +282,7 @@ func (g *Game) declareWinner(winner *game.Player) {
 	}
 }
 func (g *Game) checkforUNO(player *game.Player) {
-	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("UNO !!!! by %s ", player.Name))
-	}
+	g.Network.BroadcastInfoMessage(fmt.Sprintf("UNO! %s has one card left!", player.Name))
 }
 
 // getNextPlayer returns the next player based on the game direction
@@ -344,7 +344,7 @@ func (g *Game) HandleCommand(data []byte, player *game.Player) {
 	cmd, err := commands.DeserializeCommand(data)
 	if err != nil {
 		log.Printf("Failed to deserialize command from player %s: %v", player.Name, err)
-		g.Network.SendInfoMessage(player, "Invalid command format.")
+		g.Network.SendInfoMessage(player, "Something went wrong, try again")
 		return
 	}
 
@@ -365,7 +365,7 @@ func (g *Game) HandleCommand(data []byte, player *game.Player) {
 		if activePlayer == player {
 			g.PlayCard(player, c.CardIndex, c.NewColor)
 		} else {
-			g.Network.SendInfoMessage(player, "It's not your turn.")
+			g.Network.SendInfoMessage(player, "Hold on! It's not your turn yet")
 		}
 		g.SyncAllPlayers()
 	case *commands.DrawCardCommand:
