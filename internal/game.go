@@ -295,7 +295,6 @@ func (g *Game) performDrawActionLocked(player *game.Player, cardCount int) {
 	} else {
 		g.Network.SendInfoMessage(player, fmt.Sprintf("You picked up %d cards", len(cardsDrawn)))
 	}
-	g.Network.SendInfoMessage(player, fmt.Sprintf("%s drew %d card(s)", player.Name, len(cardsDrawn)))
 }
 
 // reverseGameDirection reverses the game direction
@@ -316,24 +315,36 @@ func (g *Game) skipNextTurn() {
 func (g *Game) declareWinner(winner *game.Player) {
 	g.GameEnded = true
 
+	// Send game over DTO to all players
 	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("%s HAS WON THE GAME!!!!", winner.Name))
-	}
-	for _, p := range g.Players {
-		g.Network.SendInfoMessage(p, fmt.Sprintf("GAME OVER %s, CLOSING CONNECTION", winner.Name))
-		g.Network.CloseConnection(p)
+		winnerDTO := dtos.WinnerDTO{
+			WinnerName: winner.Name,
+			IsWinner:   p.Name == winner.Name,
+		}
+		g.Network.SendMessage(p, winnerDTO.Serialize())
 	}
 
-	// Cleanup the room
-	if g.Room != nil {
-		go g.Room.cleanup()
-	}
+	// Give clients time to receive and process the message before closing
+	go func() {
+		// Small delay to ensure messages are delivered
+		<-time.After(500 * time.Millisecond)
+
+		// Gracefully close all connections
+		for _, p := range g.Players {
+			g.Network.CloseConnection(p)
+		}
+
+		// Cleanup the room
+		if g.Room != nil {
+			g.Room.cleanup()
+		}
+	}()
 }
 func (g *Game) checkforUNO(player *game.Player) {
 	g.Network.BroadcastInfoMessage(fmt.Sprintf("UNO! %s has one card left!", player.Name))
 }
 
-// getNextPlayer returns the next player based on the game direction
+// getNextPlayer returns the next connected player based on the game direction
 func (g *Game) getNextPlayer() *game.Player {
 	if len(g.Players) == 0 {
 		return nil

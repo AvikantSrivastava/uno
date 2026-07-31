@@ -11,7 +11,7 @@ import (
 )
 
 type Network struct {
-	clients           map[game.Player]*websocket.Conn
+	clients           map[string]*websocket.Conn
 	upgrader          websocket.Upgrader
 	broadcast         chan string
 	syncChannel       chan string
