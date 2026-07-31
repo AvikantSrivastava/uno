@@ -6,16 +6,18 @@ import (
 )
 
 type Player struct {
-	Name string
+	Name      string
 	*Deck
-	Drawn bool
+	Drawn     bool
+	Connected bool `json:"-"` // Don't serialize to client
 }
 
 func NewPlayer(name string) *Player {
 	player := &Player{
-		Name: name,
-		Deck: NewDeck(),
-		Drawn: false,
+		Name:      strings.ToUpper(name),
+		Deck:      NewDeck(),
+		Drawn:     false,
+		Connected: true,
 	}
 	return player
 }
