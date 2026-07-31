@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"sync"
+	"time"
 	"uno/models/commands"
 	"uno/models/constants/color"
 	"uno/models/constants/rank"
@@ -338,22 +339,33 @@ func (g *Game) getNextPlayer() *game.Player {
 		return nil
 	}
 
-	integerDirection := convertDirectionToInteger(g.GameDirection)
-	nextTurn := (g.CurrentTurn + integerDirection) % len(g.Players)
-	if nextTurn < 0 {
-		nextTurn += len(g.Players)
-	}
-
-	if nextTurn < 0 || nextTurn >= len(g.Players) {
+	nextIndex := g.findNextConnectedPlayer(g.CurrentTurn)
+	if nextIndex == -1 {
 		return nil
 	}
-	return g.Players[nextTurn]
+	return g.Players[nextIndex]
 }
 
-func (g *Game) getAllPlayers() []string {
+func (g *Game) getAllPlayers() []dtos.PlayerInfo {
+	var playerInfos []dtos.PlayerInfo
+	for _, player := range g.Players {
+		cardCount := player.Deck.NumberOfCards()
+		playerInfos = append(playerInfos, dtos.PlayerInfo{
+			Name:       player.Name,
+			CardStatus: dtos.GetCardStatus(cardCount),
+			IsUno:      cardCount == 1,
+		})
+	}
+	return playerInfos
+}
+
+// getConnectedPlayers returns only connected player names
+func (g *Game) getConnectedPlayers() []string {
 	var playerNames []string
 	for _, player := range g.Players {
-		playerNames = append(playerNames, player.Name)
+		if player.Connected {
+			playerNames = append(playerNames, player.Name)
+		}
 	}
 	return playerNames
 }
@@ -380,10 +392,9 @@ func (g *Game) switchtoNextPlayer() {
 	if len(g.Players) == 0 {
 		return
 	}
-	integerDirection := convertDirectionToInteger(g.GameDirection)
-	g.CurrentTurn = (g.CurrentTurn + integerDirection) % len(g.Players)
-	if g.CurrentTurn < 0 {
-		g.CurrentTurn += len(g.Players)
+	nextIndex := g.findNextConnectedPlayer(g.CurrentTurn)
+	if nextIndex != -1 {
+		g.CurrentTurn = nextIndex
 	}
 }
 
@@ -406,6 +417,8 @@ func (g *Game) HandleCommand(data []byte, player *game.Player) {
 	}
 
 	switch c := cmd.(type) {
+	case *commands.PingCommand:
+		g.sendPong(player)
 	case *commands.SyncCommand:
 		g.SyncPlayer(player)
 	case *commands.PlayCardCommand:
@@ -468,8 +481,8 @@ func (g *Game) SyncPlayer(p *game.Player) {
 	g.mu.RUnlock()
 
 	g.Network.mu.RLock()
-	conn, connOk := g.Network.clients[*p]
-	lock, lockOk := g.Network.locks[*p]
+	conn, connOk := g.Network.clients[p.Name]
+	lock, lockOk := g.Network.locks[p.Name]
 	g.Network.mu.RUnlock()
 
 	if !connOk {
@@ -506,4 +519,27 @@ func (g *Game) SyncAllPlayers() {
 		}(playerPtr)
 	}
 	wg.Wait()
+}
+
+// countConnectedPlayers returns the number of connected players
+func (g *Game) countConnectedPlayers() int {
+	count := 0
+	for _, p := range g.Players {
+		if p.Connected {
+			count++
+		}
+	}
+	return count
+}
+
+// sendPong sends a pong response to a player
+func (g *Game) sendPong(player *game.Player) {
+	g.mu.RLock()
+	connectedCount := g.countConnectedPlayers()
+	g.mu.RUnlock()
+
+	pong := dtos.PongDTO{
+		ConnectedPlayers: connectedCount,
+	}
+	g.Network.SendMessage(player, pong.Serialize())
 }

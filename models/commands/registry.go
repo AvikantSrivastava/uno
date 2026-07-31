@@ -37,4 +37,5 @@ func init() {
 	RegisterCommand("SYNC_GAME_STATE", func() interface{} { return &SyncCommand{} })
 	RegisterCommand("PLAY_CARD", func() interface{} { return &PlayCardCommand{} })
 	RegisterCommand("DRAW_CARD", func() interface{} { return &DrawCardCommand{} })
+	RegisterCommand("PING", func() interface{} { return &PingCommand{} })
 }
